@@ -11,7 +11,7 @@
 //     byte 0: 0xA5 magic
 //     byte 1: 0x01 CONFIG
 //     byte 2: group count
-//     byte 3: byte count (= group count * 2)
+//     byte 3: byte count (= group count)
 //     byte 4: XOR checksum of bytes 0..3
 //
 // One transport group = 8 S88 inputs = 1 byte.
@@ -381,6 +381,13 @@ static void onI2CReceive(
         return;
     }
 
+    if (
+        groups ==
+        activeGroupCount
+    ) {
+        return;
+    }
+
     pendingGroupCount =
         groups;
 
@@ -403,10 +410,43 @@ static void applyPendingConfiguration() {
 
     interrupts();
 
+    const uint8_t byteCount =
+        static_cast<uint8_t>(
+            groups *
+            Config::BYTES_PER_GROUP);
+
+    // Build the new snapshot while the old activeGroupCount remains visible to
+    // the I2C request ISR. The master can therefore only observe:
+    //   old count + old snapshot
+    // or, after the atomic commit below:
+    //   new count + new snapshot.
+    // It can never observe new count with old/zero-filled data.
+    uint8_t nextSnapshot[
+        Config::MAX_BYTE_COUNT] = {};
+
+    readS88Into(
+        nextSnapshot,
+        byteCount);
+
+    noInterrupts();
+
+    for (
+        uint8_t index = 0;
+        index <
+            Config::MAX_BYTE_COUNT;
+        ++index
+    ) {
+        s88Snapshot[index] =
+            index <
+                byteCount
+                ? nextSnapshot[index]
+                : 0;
+    }
+
     activeGroupCount =
         groups;
 
-    readAndPublishS88();
+    interrupts();
 
     Serial.print(
         F("I2C CONFIG applied: groups="));
