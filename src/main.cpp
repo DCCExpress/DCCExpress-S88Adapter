@@ -4,17 +4,18 @@
 #include "S88AdapterConfig.h"
 
 // -----------------------------------------------------------------------------
-// DCCExpress S88Adapter - v0.2.0
+// DCCExpress S88Adapter - v0.3.0
 //
-// Arduino Uno:
-//   - reads S88 / s88-N feedback data,
-//   - keeps the latest snapshot in memory,
-//   - exposes the snapshot as an I2C slave,
-//   - keeps the USB serial logger for diagnostics.
+// Runtime configuration:
+//   Hub -> UNO I2C write:
+//     byte 0: 0xA5 magic
+//     byte 1: 0x01 CONFIG
+//     byte 2: group count
+//     byte 3: byte count (= group count * 2)
+//     byte 4: XOR checksum of bytes 0..3
 //
-// I2C:
-//   SDA = A4
-//   SCL = A5
+// One group = 16 S88 inputs = 2 bytes.
+// Maximum: 16 groups = 256 sensors = 32 bytes.
 // -----------------------------------------------------------------------------
 
 namespace Config {
@@ -22,12 +23,11 @@ namespace Config {
 constexpr uint32_t SERIAL_BAUD =
     115200;
 
-// Arduino Uno S88 pin assignment.
 constexpr uint8_t S88_CLOCK_PIN =
     2;
 
 constexpr uint8_t S88_LOAD_PIN =
-    3; // PS / LOAD
+    3;
 
 constexpr uint8_t S88_RESET_PIN =
     4;
@@ -38,18 +38,18 @@ constexpr uint8_t S88_DATA_PIN =
 constexpr uint8_t I2C_ADDRESS =
     S88_I2C_ADDRESS;
 
-constexpr uint8_t MODULE_COUNT =
-    S88_MODULE_COUNT;
+constexpr uint8_t DEFAULT_GROUP_COUNT =
+    S88_DEFAULT_GROUP_COUNT;
 
-constexpr uint16_t INPUT_COUNT =
-    static_cast<uint16_t>(
-        MODULE_COUNT) *
-    16U;
+constexpr uint8_t MAX_GROUP_COUNT =
+    S88_MAX_GROUP_COUNT;
 
-constexpr uint8_t BYTE_COUNT =
-    static_cast<uint8_t>(
-        (INPUT_COUNT + 7U) /
-        8U);
+constexpr uint8_t BYTES_PER_GROUP =
+    2;
+
+constexpr uint8_t MAX_BYTE_COUNT =
+    MAX_GROUP_COUNT *
+    BYTES_PER_GROUP;
 
 constexpr uint16_t HALF_CLOCK_US =
     S88_HALF_CLOCK_US;
@@ -63,21 +63,51 @@ constexpr uint32_t READ_INTERVAL_MS =
 constexpr uint32_t LOG_INTERVAL_MS =
     S88_LOG_INTERVAL_MS;
 
+constexpr uint8_t CONFIG_MAGIC =
+    0xA5;
+
+constexpr uint8_t CONFIG_COMMAND =
+    0x01;
+
 } // namespace Config
 
-// Latest complete S88 snapshot exposed through I2C.
-//
-// The loop builds the next snapshot in a local buffer and copies it here
-// atomically. The Wire onRequest callback therefore never sees a half-updated
-// multi-byte snapshot.
 static volatile uint8_t
-    s88Snapshot[Config::BYTE_COUNT] = {};
+    s88Snapshot[
+        Config::MAX_BYTE_COUNT] = {};
+
+static volatile uint8_t
+    activeGroupCount =
+        Config::DEFAULT_GROUP_COUNT;
+
+static volatile bool
+    configPending =
+        false;
+
+static volatile uint8_t
+    pendingGroupCount =
+        Config::DEFAULT_GROUP_COUNT;
 
 static uint32_t
-    lastReadMs = 0;
+    lastReadMs =
+        0;
 
 static uint32_t
-    lastLogMs = 0;
+    lastLogMs =
+        0;
+
+static inline uint8_t activeByteCount() {
+    return
+        static_cast<uint8_t>(
+            activeGroupCount *
+            Config::BYTES_PER_GROUP);
+}
+
+static inline uint16_t activeInputCount() {
+    return
+        static_cast<uint16_t>(
+            activeGroupCount) *
+        16U;
+}
 
 static inline void waitControlPulse() {
     delayMicroseconds(
@@ -128,16 +158,22 @@ static void storeBit(
 }
 
 static void readS88Into(
-    uint8_t* data) {
+    uint8_t* data,
+    uint8_t byteCount) {
     for (
         uint8_t index = 0;
-        index < Config::BYTE_COUNT;
+        index < byteCount;
         ++index
     ) {
-        data[index] = 0;
+        data[index] =
+            0;
     }
 
-    // Defined S88 idle state.
+    const uint16_t inputCount =
+        static_cast<uint16_t>(
+            byteCount) *
+        8U;
+
     digitalWrite(
         Config::S88_CLOCK_PIN,
         LOW);
@@ -152,24 +188,23 @@ static void readS88Into(
 
     waitControlPulse();
 
-    // LOAD / PS high, followed by the first clock pulse.
     digitalWrite(
         Config::S88_LOAD_PIN,
         HIGH);
 
     waitControlPulse();
 
-    setClock(true);
-    setClock(false);
+    setClock(
+        true);
 
-    // First feedback bit is available after the first clock pulse.
+    setClock(
+        false);
+
     storeBit(
         data,
         0,
         readDataPin());
 
-    // Reset the input latches while the loaded snapshot remains in the shift
-    // registers.
     digitalWrite(
         Config::S88_RESET_PIN,
         HIGH);
@@ -182,7 +217,6 @@ static void readS88Into(
 
     waitControlPulse();
 
-    // End LOAD phase and shift out the remaining bits.
     digitalWrite(
         Config::S88_LOAD_PIN,
         LOW);
@@ -191,11 +225,14 @@ static void readS88Into(
 
     for (
         uint16_t bitIndex = 1;
-        bitIndex < Config::INPUT_COUNT;
+        bitIndex < inputCount;
         ++bitIndex
     ) {
-        setClock(true);
-        setClock(false);
+        setClock(
+            true);
+
+        setClock(
+            false);
 
         storeBit(
             data,
@@ -203,7 +240,6 @@ static void readS88Into(
             readDataPin());
     }
 
-    // Return to idle.
     digitalWrite(
         Config::S88_CLOCK_PIN,
         LOW);
@@ -218,46 +254,53 @@ static void readS88Into(
 }
 
 static void publishSnapshot(
-    const uint8_t* data) {
-    // Prevent the I2C request ISR from reading between individual byte copies.
+    const uint8_t* data,
+    uint8_t byteCount) {
     noInterrupts();
 
     for (
         uint8_t index = 0;
-        index < Config::BYTE_COUNT;
+        index <
+            Config::MAX_BYTE_COUNT;
         ++index
     ) {
         s88Snapshot[index] =
-            data[index];
+            index <
+                byteCount
+                ? data[index]
+                : 0;
     }
 
     interrupts();
 }
 
 static void readAndPublishS88() {
+    const uint8_t byteCount =
+        activeByteCount();
+
     uint8_t nextSnapshot[
-        Config::BYTE_COUNT] = {};
+        Config::MAX_BYTE_COUNT] = {};
 
     readS88Into(
-        nextSnapshot);
+        nextSnapshot,
+        byteCount);
 
     publishSnapshot(
-        nextSnapshot);
+        nextSnapshot,
+        byteCount);
 }
 
-// Called by the Wire library when the I2C master requests data.
-//
-// Do not use Serial, delay(), or other slow operations here. This callback
-// executes from the AVR TWI interrupt context.
+// I2C master requests the current raw S88 snapshot.
 static void onI2CRequest() {
-    uint8_t response[
-        Config::BYTE_COUNT];
+    const uint8_t byteCount =
+        activeByteCount();
 
-    // We are already in interrupt context, so the main loop cannot modify
-    // s88Snapshot while this copy is taking place.
+    uint8_t response[
+        Config::MAX_BYTE_COUNT];
+
     for (
         uint8_t index = 0;
-        index < Config::BYTE_COUNT;
+        index < byteCount;
         ++index
     ) {
         response[index] =
@@ -266,7 +309,121 @@ static void onI2CRequest() {
 
     Wire.write(
         response,
-        Config::BYTE_COUNT);
+        byteCount);
+}
+
+// Hub sends runtime group/byte configuration here.
+// Keep this ISR callback tiny: validate and publish a pending group count only.
+static void onI2CReceive(
+    int receivedCount) {
+    uint8_t packet[5] = {};
+    uint8_t index = 0;
+
+    while (
+        Wire.available() &&
+        index <
+            sizeof(packet)
+    ) {
+        packet[index++] =
+            static_cast<uint8_t>(
+                Wire.read());
+    }
+
+    while (
+        Wire.available()
+    ) {
+        Wire.read();
+    }
+
+    if (
+        receivedCount !=
+            5 ||
+        index !=
+            5
+    ) {
+        return;
+    }
+
+    const uint8_t checksum =
+        static_cast<uint8_t>(
+            packet[0] ^
+            packet[1] ^
+            packet[2] ^
+            packet[3]);
+
+    if (
+        packet[0] !=
+            Config::CONFIG_MAGIC ||
+        packet[1] !=
+            Config::CONFIG_COMMAND ||
+        packet[4] !=
+            checksum
+    ) {
+        return;
+    }
+
+    const uint8_t groups =
+        packet[2];
+
+    const uint8_t bytes =
+        packet[3];
+
+    if (
+        groups < 1 ||
+        groups >
+            Config::MAX_GROUP_COUNT ||
+        bytes !=
+            static_cast<uint8_t>(
+                groups *
+                Config::BYTES_PER_GROUP)
+    ) {
+        return;
+    }
+
+    pendingGroupCount =
+        groups;
+
+    configPending =
+        true;
+}
+
+static void applyPendingConfiguration() {
+    if (!configPending) {
+        return;
+    }
+
+    noInterrupts();
+
+    const uint8_t groups =
+        pendingGroupCount;
+
+    configPending =
+        false;
+
+    interrupts();
+
+    activeGroupCount =
+        groups;
+
+    readAndPublishS88();
+
+    Serial.print(
+        F("I2C CONFIG applied: groups="));
+
+    Serial.print(
+        activeGroupCount);
+
+    Serial.print(
+        F(" bytes="));
+
+    Serial.print(
+        activeByteCount());
+
+    Serial.print(
+        F(" inputs="));
+
+    Serial.println(
+        activeInputCount());
 }
 
 static void printByteBinary(
@@ -293,14 +450,17 @@ static void printByteBinary(
 }
 
 static void printS88Data() {
+    const uint8_t byteCount =
+        activeByteCount();
+
     uint8_t snapshot[
-        Config::BYTE_COUNT];
+        Config::MAX_BYTE_COUNT];
 
     noInterrupts();
 
     for (
         uint8_t index = 0;
-        index < Config::BYTE_COUNT;
+        index < byteCount;
         ++index
     ) {
         snapshot[index] =
@@ -314,7 +474,7 @@ static void printS88Data() {
 
     for (
         uint8_t index = 0;
-        index < Config::BYTE_COUNT;
+        index < byteCount;
         ++index
     ) {
         Serial.print(
@@ -332,7 +492,10 @@ static void printHexAddress(
     Serial.print(
         F("0x"));
 
-    if (address < 0x10) {
+    if (
+        address <
+        0x10
+    ) {
         Serial.print(
             '0');
     }
@@ -377,24 +540,24 @@ void setup() {
     delay(
         500);
 
-    // Create the first valid S88 snapshot before exposing the I2C slave.
     readAndPublishS88();
 
-    // Arduino Uno hardware I2C:
-    //   SDA = A4
-    //   SCL = A5
     Wire.begin(
         Config::I2C_ADDRESS);
 
     Wire.onRequest(
         onI2CRequest);
 
+    Wire.onReceive(
+        onI2CReceive);
+
     Serial.println();
-    Serial.println(
-        F("DCCExpress S88Adapter v0.2.0"));
 
     Serial.println(
-        F("Mode: S88 -> Serial + I2C slave"));
+        F("DCCExpress S88Adapter v0.3.0"));
+
+    Serial.println(
+        F("Mode: S88 -> Serial + configurable I2C slave"));
 
     Serial.print(
         F("I2C slave address: "));
@@ -406,22 +569,25 @@ void setup() {
         F("  SDA=A4 SCL=A5"));
 
     Serial.print(
-        F("S88 modules: "));
+        F("Default groups: "));
 
     Serial.print(
-        Config::MODULE_COUNT);
-
-    Serial.print(
-        F("  inputs: "));
-
-    Serial.print(
-        Config::INPUT_COUNT);
+        activeGroupCount);
 
     Serial.print(
         F("  bytes: "));
 
+    Serial.print(
+        activeByteCount());
+
+    Serial.print(
+        F("  inputs: "));
+
     Serial.println(
-        Config::BYTE_COUNT);
+        activeInputCount());
+
+    Serial.println(
+        F("Hub may change groups/bytes at runtime over I2C."));
 
     Serial.println(
         F("Pins: CLOCK=D2 LOAD=D3 RESET=D4 DATA=D5"));
@@ -443,12 +609,6 @@ void setup() {
     Serial.println(
         F(" Hz"));
 
-    Serial.println(
-        F("I2C byte 0 = inputs 1..8, byte 1 = inputs 9..16"));
-
-    Serial.println(
-        F("Example: 01 00 = input 1 occupied"));
-
     Serial.println();
 
     lastReadMs =
@@ -459,6 +619,8 @@ void setup() {
 }
 
 void loop() {
+    applyPendingConfiguration();
+
     const uint32_t now =
         millis();
 
