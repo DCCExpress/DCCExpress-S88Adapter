@@ -4,21 +4,24 @@
 
 // -----------------------------------------------------------------------------
 // DCCExpress S88Adapter defaults
+//
+// One transport group = 8 S88 feedback bits = 1 byte.
 // -----------------------------------------------------------------------------
 
 #ifndef S88_I2C_ADDRESS
 #define S88_I2C_ADDRESS 0x30
 #endif
 
-// Used until DCCExpressHub sends the runtime group count.
+// Default 2 byte-groups = 16 sensors.
+// Hub may change this dynamically after startup.
 #ifndef S88_DEFAULT_GROUP_COUNT
-#define S88_DEFAULT_GROUP_COUNT 1
+#define S88_DEFAULT_GROUP_COUNT 2
 #endif
 
-// AVR Wire TX buffer is 32 bytes.
-// One S88 group = 16 sensors = 2 bytes.
+// AVR Wire TX buffer is 32 bytes:
+// 32 groups * 8 sensors = 256 sensors.
 #ifndef S88_MAX_GROUP_COUNT
-#define S88_MAX_GROUP_COUNT 16
+#define S88_MAX_GROUP_COUNT 32
 #endif
 
 #ifndef S88_HALF_CLOCK_US
@@ -45,8 +48,8 @@ static_assert(
 static_assert(
     S88_DEFAULT_GROUP_COUNT >= 1 &&
     S88_DEFAULT_GROUP_COUNT <= S88_MAX_GROUP_COUNT,
-    "Invalid S88 default group count");
+    "Invalid S88 default byte-group count");
 
 static_assert(
-    S88_MAX_GROUP_COUNT <= 16,
-    "16 S88 groups = 32 bytes, the AVR Wire buffer limit");
+    S88_MAX_GROUP_COUNT <= 32,
+    "AVR Wire can return at most 32 S88 bytes");

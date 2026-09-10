@@ -14,8 +14,9 @@
 //     byte 3: byte count (= group count * 2)
 //     byte 4: XOR checksum of bytes 0..3
 //
-// One group = 16 S88 inputs = 2 bytes.
-// Maximum: 16 groups = 256 sensors = 32 bytes.
+// One transport group = 8 S88 inputs = 1 byte.
+// Physical module boundaries do not matter.
+// Maximum: 32 groups = 256 sensors = 32 bytes.
 // -----------------------------------------------------------------------------
 
 namespace Config {
@@ -45,7 +46,7 @@ constexpr uint8_t MAX_GROUP_COUNT =
     S88_MAX_GROUP_COUNT;
 
 constexpr uint8_t BYTES_PER_GROUP =
-    2;
+    1;
 
 constexpr uint8_t MAX_BYTE_COUNT =
     MAX_GROUP_COUNT *
@@ -106,7 +107,7 @@ static inline uint16_t activeInputCount() {
     return
         static_cast<uint16_t>(
             activeGroupCount) *
-        16U;
+        8U;
 }
 
 static inline void waitControlPulse() {
@@ -569,7 +570,7 @@ void setup() {
         F("  SDA=A4 SCL=A5"));
 
     Serial.print(
-        F("Default groups: "));
+        F("Default 8-bit groups: "));
 
     Serial.print(
         activeGroupCount);
@@ -587,7 +588,7 @@ void setup() {
         activeInputCount());
 
     Serial.println(
-        F("Hub may change groups/bytes at runtime over I2C."));
+        F("Hub may change byte-group count at runtime over I2C."));
 
     Serial.println(
         F("Pins: CLOCK=D2 LOAD=D3 RESET=D4 DATA=D5"));
