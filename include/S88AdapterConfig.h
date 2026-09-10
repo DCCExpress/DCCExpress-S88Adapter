@@ -8,12 +8,16 @@
 // One transport group = 8 S88 feedback bits = 1 byte.
 // -----------------------------------------------------------------------------
 
+#ifndef S88_ADAPTER_VERSION
+#define S88_ADAPTER_VERSION "0.4.0"
+#endif
+
 #ifndef S88_I2C_ADDRESS
 #define S88_I2C_ADDRESS 0x30
 #endif
 
 // Default 2 byte-groups = 16 sensors.
-// Hub may change this dynamically after startup.
+// Hub or serial console may change this dynamically after startup.
 #ifndef S88_DEFAULT_GROUP_COUNT
 #define S88_DEFAULT_GROUP_COUNT 2
 #endif
