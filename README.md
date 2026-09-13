@@ -27,6 +27,7 @@ Main features:
 - adapter INFO packet with firmware/protocol/capability information
 - direct S88 snapshot reads over I2C
 - tested with a **YaMoRC YD6016ES-CS**
+- stable operation verified with **two chained 16-input s88-N modules / 32 inputs**
 
 ## Architecture
 
@@ -229,14 +230,14 @@ The maximum of 32 bytes is based on the AVR Wire transmit buffer size.
 Current default timing:
 
 ```text
-CLOCK HIGH: 20 us
-CLOCK LOW:  20 us
+CLOCK HIGH: 50 us
+CLOCK LOW:  50 us
 ```
 
 This gives an S88 clock of approximately:
 
 ```text
-25 kHz
+10 kHz
 ```
 
 Control pulse timing:
@@ -244,6 +245,20 @@ Control pulse timing:
 ```text
 50 us
 ```
+
+The clock was intentionally reduced from the earlier **25 kHz** setting after testing with multiple chained s88-N modules.
+
+With two chained 16-input modules / 32 feedback inputs, the faster timing produced intermittent adjacent-bit errors such as:
+
+```text
+_00000001
+_00000011
+_00000010
+```
+
+Reducing the clock to approximately **10 kHz** eliminated the instability and produced stable feedback states.
+
+For model railway occupancy detection, 10 kHz is still comfortably fast and provides better timing margin on multi-module S88 chains.
 
 The adapter refreshes the S88 snapshot approximately every `20 ms`.
 
@@ -368,6 +383,12 @@ Input 1 active:
 
 ```text
 S88: _00000001 _00000000
+```
+
+With 32 inputs configured (`SET BYTES 4`), input 17 active should appear as:
+
+```text
+S88: _00000000 _00000000 _00000001 _00000000
 ```
 
 ### SET ADDRESS
@@ -721,6 +742,26 @@ If using a YaMoRC YD6016ES-CS, check that the green LED indicates module power/a
 
 A common cause is a 4-conductor Ethernet cable. Use a cable tester and verify all eight pins are connected straight through.
 
+## Feedback bits flicker or adjacent inputs appear briefly
+
+If an occupied input intermittently appears as two adjacent active bits, for example:
+
+```text
+_00000001
+_00000011
+_00000010
+```
+
+check:
+
+- full 8-conductor cable,
+- common GND,
+- module chaining direction,
+- S88 bus voltage,
+- CLOCK and DATA signal integrity.
+
+The current firmware default uses approximately **10 kHz S88 clock** (`50 us HIGH + 50 us LOW`) because this proved stable with two chained 16-input modules / 32 feedback inputs.
+
 ## New I2C address does not respond
 
 Changing the address requires:
@@ -744,7 +785,7 @@ Use `SAVE` after `SET BYTES ...`.
 - Do not feed 12 V into a YaMoRC YD6016ES-CS s88-N connection.
 - Verify RJ45 pin numbering instead of trusting wire colors.
 - Use a full 8-conductor straight-through cable.
-- When connecting an ESP32-based Hub to a 5 V Arduino Uno over I2C, use an appropriate bidirectional level shifter / voltage-level interface.
+- When connecting an ESP32-based Hub to an Arduino Uno over I2C, use the appropriate voltage-level interface for 3.3 V / 5 V logic.
 
 # Project status
 
@@ -758,6 +799,8 @@ The S88 adapter is currently considered feature-complete for the intended DCCExp
 - EEPROM persistence: implemented
 - status / diagnostic console: implemented
 - YaMoRC YD6016ES-CS compatibility: tested
+- two-module / 32-input chained operation: tested
+- stable 10 kHz S88 timing: verified
 
 Future changes can focus on additional hardware support, diagnostics or protocol extensions rather than the basic adapter functionality.
 

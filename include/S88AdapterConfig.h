@@ -41,8 +41,13 @@
 #define S88_MAX_GROUP_COUNT 32
 #endif
 
+// S88 clock timing.
+//
+// 50 us HIGH + 50 us LOW = 100 us period = ~10 kHz.
+// This intentionally slows the previous 25 kHz timing down for better
+// signal margin on multi-module S88 / s88-N chains.
 #ifndef S88_HALF_CLOCK_US
-#define S88_HALF_CLOCK_US 20
+#define S88_HALF_CLOCK_US 50
 #endif
 
 #ifndef S88_CONTROL_PULSE_US
