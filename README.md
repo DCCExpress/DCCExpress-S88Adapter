@@ -808,5 +808,5 @@ Future changes can focus on additional hardware support, diagnostics or protocol
 
 - s88-N specification: https://s88-n.eu/en/
 - s88-N timing: https://s88-n.eu/en/s88-timing.html
-- YaMoRC YD6016ES-CS manual: https://www.yamorc.de/downloads/YD6016ES-CS.de.pdf
+- YaMoRC YD6016ES-CS manual: https://www.yamorc.de/downloads/YD6016ES-CS.en.pdf
 - YaMoRC YD6016ES-CS product information: https://yamorc.de/upcp_product/yd6016es-cs/
