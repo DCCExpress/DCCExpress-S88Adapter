@@ -1,10 +1,20 @@
 # DCCExpress-S88Adapter
 
-Arduino-based **S88 / s88-N feedback adapter** for the [DCCExpressHub](https://github.com/DCCExpress/DCCExpressHub) ecosystem.
+Arduino-based **S88 / s88-N feedback adapter for DCC-EX CommandStation-EX**.
 
-The adapter reads S88 occupancy feedback, exposes the current feedback snapshot to the DCCExpressHub over I2C, and provides a USB serial console for configuration and diagnostics.
+The primary purpose of this project is to add S88 occupancy feedback to a
+DCC-EX command station through its I2C HAL. DCC-EX reads the adapter over I2C,
+maps the S88 inputs to VPINs, and emits normal DCC-EX sensor events such as
+`<Q ID>` and `<q ID>`.
 
-The current firmware is intended to be a complete, usable adapter implementation for Arduino Uno-class ATmega328P boards.
+Those standard DCC-EX events can then be consumed by
+[DCCExpressHub](https://github.com/DCCExpress/DCCExpressHub), JMRI or other
+DCC-EX clients without any S88-specific transport on the client side.
+
+The adapter firmware itself runs on an Arduino Uno-class ATmega328P board. It
+owns the S88 bus, keeps its hardware configuration in EEPROM, and exposes a
+read-only I2C snapshot interface plus a USB serial configuration/diagnostic
+console.
 
 ## Current firmware
 
@@ -23,7 +33,8 @@ Main features:
 - configuration stored in Arduino EEPROM
 - USB serial configuration console
 - periodic S88 diagnostic logging
-- read-only I2C protocol for DCCExpressHub
+- read-only I2C protocol for **DCC-EX CommandStation-EX**
+- DCC-EX HAL driver included in this repository
 - adapter INFO packet with firmware/protocol/capability information
 - direct S88 snapshot reads over I2C
 - tested with a **YaMoRC YD6016ES-CS**
@@ -31,7 +42,7 @@ Main features:
 
 ## Architecture
 
-The adapter owns its own hardware configuration.
+The normal DCC-EX integration is:
 
 ```text
 S88 / s88-N feedback modules
@@ -50,13 +61,84 @@ S88 / s88-N feedback modules
           | I2C
           v
 +--------------------------+
-| DCCExpressHub / ESP32    |
+| DCC-EX CommandStation-EX |
+| DCCExpressS88 HAL driver |
++--------------------------+
+          |
+          | normal DCC-EX
+          | <Q>/<q> events
+          v
++--------------------------+
+| DCCExpressHub / JMRI /   |
+| other DCC-EX clients     |
 +--------------------------+
 ```
 
-The DCCExpressHub can request adapter information and read the current S88 snapshot. The Hub **does not change adapter configuration**.
+The DCC-EX HAL driver has read-only access to the adapter. Adapter I2C address
+and S88 byte length are configured locally through the Arduino USB serial
+console.
 
-I2C address and S88 byte length are configured locally through the Arduino USB serial console.
+## DCC-EX integration
+
+The repository contains a ready-to-use DCC-EX integration under:
+
+```text
+dcc-ex/
+├── IO_DCCExpressS88.h
+├── myHal.example.cpp
+├── sensors-1001-1032.txt
+└── README.md
+```
+
+For the complete DCC-EX installation guide, see:
+
+[dcc-ex/README.md](dcc-ex/README.md)
+
+Typical 32-input setup:
+
+1. Configure the adapter for four S88 bytes:
+
+```text
+SET BYTES 4
+SAVE
+```
+
+2. Copy `dcc-ex/IO_DCCExpressS88.h` into the CommandStation-EX
+configuration/source location.
+3. Merge the example from `dcc-ex/myHal.example.cpp` into your existing
+DCC-EX `myHal.cpp`.
+4. Map the S88 inputs to VPIN/sensor IDs, for example 1001-1032.
+5. Verify DCC-EX emits normal events such as:
+
+```text
+<Q 1001>
+<q 1001>
+```
+
+Example HAL configuration:
+
+```cpp
+#include "IO_DCCExpressS88.h"
+#include "Sensors.h"
+
+void halSetup() {
+    constexpr int FIRST_VPIN = 1001;
+    constexpr int SENSOR_COUNT = 32;
+
+    DCCExpressS88::create(FIRST_VPIN, SENSOR_COUNT, 0x30);
+
+    for (int i = 0; i < SENSOR_COUNT; i++) {
+        const int id = FIRST_VPIN + i;
+        Sensor::create(id, id, 0);
+    }
+}
+```
+
+This produces the normal DCC-EX sensor path:
+
+```text
+S88 input -> DCC-EX VPIN -> DCC-EX Sensor -> <Q>/<q> -> client
+```
 
 ## Supported hardware
 
@@ -564,30 +646,33 @@ SCL = A5
 
 ## Ownership model
 
-The DCCExpressHub has read-only access.
+The **DCC-EX HAL driver** has read-only access.
 
-The Hub can:
+DCC-EX can:
 
 - request adapter INFO,
-- read the current S88 snapshot.
+- read the current S88 snapshot,
+- expose the adapter inputs as VPINs and Sensor objects.
 
-The Hub cannot:
+DCC-EX cannot:
 
-- change I2C address,
-- change S88 byte count,
+- change the adapter I2C address,
+- change the adapter S88 byte count,
 - write adapter configuration.
 
-Configuration is intentionally controlled only through USB serial.
+Configuration is intentionally controlled only through the Arduino USB serial
+console.
 
 ## Normal snapshot read
 
-A normal I2C read returns the current raw S88 snapshot. The Hub requests exactly the number of bytes advertised by the adapter.
+A normal I2C read returns the current raw S88 snapshot. The DCC-EX HAL driver
+requests exactly the number of bytes advertised by the adapter.
 
 Each byte contains eight S88 feedback states.
 
 ## INFO request
 
-The Hub can request a fixed adapter information packet.
+The DCC-EX HAL driver can request a fixed adapter information packet.
 
 I2C write selector:
 
@@ -785,11 +870,11 @@ Use `SAVE` after `SET BYTES ...`.
 - Do not feed 12 V into a YaMoRC YD6016ES-CS s88-N connection.
 - Verify RJ45 pin numbering instead of trusting wire colors.
 - Use a full 8-conductor straight-through cable.
-- When connecting an ESP32-based Hub to an Arduino Uno over I2C, use the appropriate voltage-level interface for 3.3 V / 5 V logic.
+- When the DCC-EX controller uses 3.3 V logic, use an appropriate I2C level interface to the 5 V Arduino Uno adapter unless the controller hardware is explicitly 5 V tolerant.
 
 # Project status
 
-The S88 adapter is currently considered feature-complete for the intended DCCExpressHub integration:
+The S88 adapter is currently considered feature-complete for the intended DCC-EX CommandStation-EX integration and downstream use with DCCExpressHub/JMRI:
 
 - S88 acquisition: implemented
 - configurable byte/input count: implemented
@@ -806,6 +891,8 @@ Future changes can focus on additional hardware support, diagnostics or protocol
 
 # References
 
+- DCC-EX CommandStation-EX: https://github.com/DCC-EX/CommandStation-EX
+- DCCExpressHub: https://github.com/DCCExpress/DCCExpressHub
 - s88-N specification: https://s88-n.eu/en/
 - s88-N timing: https://s88-n.eu/en/s88-timing.html
 - YaMoRC YD6016ES-CS manual: https://www.yamorc.de/downloads/YD6016ES-CS.en.pdf
