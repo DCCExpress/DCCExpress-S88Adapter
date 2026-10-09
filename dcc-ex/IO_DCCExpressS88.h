@@ -39,14 +39,14 @@ private:
   static constexpr uint8_t INFO_SIZE = 10;
   static constexpr uint8_t MAX_BYTES = 32;
   static constexpr uint16_t MAX_INPUTS = MAX_BYTES * 8;
-  static constexpr unsigned long REFRESH_US = 20000UL;
+  static constexpr unsigned long REFRESH_MS = 500UL;
 
   uint8_t _snapshot[MAX_BYTES] = {};
   uint8_t _readBuffer[MAX_BYTES] = {};
   uint8_t _info[INFO_SIZE] = {};
   uint8_t _byteCount = 0;
   uint16_t _requestedPins = 0;
-  unsigned long _lastRead = 0;
+  unsigned long _lastReadMs = 0;
   I2CRB _i2crb;
   bool _readPending = false;
 
@@ -116,7 +116,7 @@ private:
          _I2CAddress.toString(), _info[3], _info[4], _info[5], _info[2],
          _byteCount, availablePins, _firstVpin, _firstVpin + _requestedPins - 1);
 
-    _lastRead = micros();
+    _lastReadMs = millis();
   }
 
   int _read(VPIN vpin) override {
@@ -141,10 +141,11 @@ private:
       }
     }
 
-    if (!_readPending && currentMicros - _lastRead >= REFRESH_US) {
+    const unsigned long currentMs = currentMicros / 1000UL;
+    if (!_readPending && currentMs - _lastReadMs >= REFRESH_MS) {
       I2CManager.read(_I2CAddress, _readBuffer, _byteCount, nullptr, 0, &_i2crb);
       _readPending = true;
-      _lastRead = currentMicros;
+      _lastReadMs = currentMs;
     }
   }
 
