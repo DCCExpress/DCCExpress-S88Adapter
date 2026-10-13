@@ -9,7 +9,7 @@
 #include "S88AdapterConfig.h"
 
 // -----------------------------------------------------------------------------
-// DCCExpress S88Adapter - v0.5.0
+// DCCExpress S88Adapter - v0.6.0
 //
 // Ownership model:
 //   * USB serial configures I2C address + S88 byte length.
@@ -56,6 +56,7 @@ constexpr uint16_t HALF_CLOCK_US = S88_HALF_CLOCK_US;
 constexpr uint16_t CONTROL_PULSE_US = S88_CONTROL_PULSE_US;
 constexpr uint32_t READ_INTERVAL_MS = S88_READ_INTERVAL_MS;
 constexpr uint32_t LOG_INTERVAL_MS = S88_LOG_INTERVAL_MS;
+constexpr uint32_t MIN_SERIAL_INTERVAL_MS = 60UL;
 
 constexpr uint8_t PROTOCOL_MAGIC = 0xA5;
 constexpr uint8_t INFO_REQUEST = 0x02;
@@ -108,7 +109,11 @@ static uint8_t savedI2CAddress = Config::DEFAULT_I2C_ADDRESS;
 static uint8_t savedByteCount = Config::DEFAULT_BYTE_COUNT;
 static bool eepromConfigurationValid = false;
 
+// Serial snapshots are ASCII in both modes. Reset always selects compact HEX.
+enum class SerialView : uint8_t { Hex, Binary };
+static SerialView serialView = SerialView::Hex;
 static bool periodicLoggingEnabled = true;
+static bool snapshotPending = true;
 
 static uint32_t lastReadMs = 0;
 static uint32_t lastLogMs = 0;
@@ -219,7 +224,15 @@ static void readAndPublishS88() {
   uint8_t nextSnapshot[Config::MAX_BYTE_COUNT] = {};
 
   readS88Into(nextSnapshot, byteCount);
+  bool changed = false;
+  for (uint8_t index = 0; index < byteCount; ++index) {
+    if (nextSnapshot[index] != s88Snapshot[index]) {
+      changed = true;
+      break;
+    }
+  }
   publishSnapshot(nextSnapshot, byteCount);
+  if (changed) snapshotPending = true;
 }
 
 static void applyByteCount(
@@ -261,6 +274,7 @@ static void applyByteCount(
   activeByteCountSource = source;
 
   interrupts();
+  snapshotPending = true;
 
   if (printMessage) {
     Serial.print(F("CONFIG applied: bytes="));
@@ -359,6 +373,24 @@ static void printByteBinary(uint8_t value) {
   }
 }
 
+// CRC-16/CCITT-FALSE over [S88 byte count, S88 byte data].
+// poly=0x1021, init=0xFFFF, refin/refout=false, xorout=0.
+static uint16_t crc16Update(uint16_t crc, uint8_t value) {
+  crc ^= static_cast<uint16_t>(value) << 8;
+  for (uint8_t bit = 0; bit < 8; ++bit) {
+    crc = (crc & 0x8000U)
+        ? static_cast<uint16_t>((crc << 1) ^ 0x1021U)
+        : static_cast<uint16_t>(crc << 1);
+  }
+  return crc;
+}
+
+static void printHexByte(uint8_t value) {
+  static const char digits[] = "0123456789ABCDEF";
+  Serial.write(digits[(value >> 4) & 0x0F]);
+  Serial.write(digits[value & 0x0F]);
+}
+
 static void printS88Data() {
   const uint8_t byteCount = readActiveByteCount();
   uint8_t snapshot[Config::MAX_BYTE_COUNT] = {};
@@ -370,12 +402,26 @@ static void printS88Data() {
   interrupts();
 
   Serial.print(F("S88:"));
-
-  for (uint8_t index = 0; index < byteCount; ++index) {
-    Serial.print(' ');
-    printByteBinary(snapshot[index]);
+  if (serialView == SerialView::Binary) {
+    // Original human-readable binary view, unchanged.
+    for (uint8_t index = 0; index < byteCount; ++index) {
+      Serial.print(' ');
+      printByteBinary(snapshot[index]);
+    }
+  } else {
+    // V0.6 ASCII HEX: S88:04:0200FF01*CCCC<LF>.
+    // CCCC is CRC16 of raw bytes 04 02 00 FF 01.
+    printHexByte(byteCount);
+    Serial.write(':');
+    uint16_t crc = crc16Update(0xFFFFU, byteCount);
+    for (uint8_t index = 0; index < byteCount; ++index) {
+      printHexByte(snapshot[index]);
+      crc = crc16Update(crc, snapshot[index]);
+    }
+    Serial.write('*');
+    printHexByte(static_cast<uint8_t>(crc >> 8));
+    printHexByte(static_cast<uint8_t>(crc & 0xFF));
   }
-
   Serial.println();
 }
 
@@ -527,6 +573,8 @@ static void printStatus() {
 
   Serial.print(F("Periodic S88 log: "));
   Serial.println(periodicLoggingEnabled ? F("ON") : F("OFF"));
+  Serial.print(F("Serial view: "));
+  Serial.println(serialView == SerialView::Hex ? F("HEX") : F("BIN"));
 
   Serial.println(F("Hub access: READ ONLY (INFO + snapshot)"));
   Serial.println(F("-------------------------"));
@@ -570,6 +618,8 @@ static void printHelp() {
   Serial.println(F("STATUS                       Show live/staged/saved configuration"));
   Serial.println(F("INFO                         Show firmware/protocol/hardware information"));
   Serial.println(F("READ                         Print current S88 snapshot now"));
+  Serial.println(F("VIEW HEX                     Compact ASCII HEX + CRC16 (boot default)"));
+  Serial.println(F("VIEW BIN                     Original _00000001 ASCII binary view"));
   Serial.println(F("SET ADDRESS 0x30             Stage I2C slave address (0x08..0x77)"));
   Serial.println(F("SET I2C 0x30                 Alias for SET ADDRESS"));
   Serial.println(F("SET BYTES 4                  Set active/staged S88 length (1..32 bytes)"));
@@ -693,6 +743,25 @@ static void handleSerialCommand(char* line) {
 
   if (equalsIgnoreCase(command, "READ")) {
     printS88Data();
+    return;
+  }
+
+  if (equalsIgnoreCase(command, "VIEW")) {
+    char* view = strtok(nullptr, " \t");
+    if (view && equalsIgnoreCase(view, "HEX")) {
+      serialView = SerialView::Hex;
+      Serial.println(F("OK: serial view HEX (boot default)"));
+      printS88Data();
+    } else if (view && (equalsIgnoreCase(view, "BIN") || equalsIgnoreCase(view, "BINARY"))) {
+      serialView = SerialView::Binary;
+      Serial.println(F("OK: serial view BIN (ASCII bits)"));
+      printS88Data();
+    } else if (!view) {
+      Serial.print(F("Serial view: "));
+      Serial.println(serialView == SerialView::Hex ? F("HEX") : F("BIN"));
+    } else {
+      Serial.println(F("ERR: usage VIEW HEX or VIEW BIN"));
+    }
     return;
   }
 
@@ -831,10 +900,15 @@ void setup() {
   Serial.print(clockHz);
   Serial.println(F(" Hz"));
   Serial.println(F("Type HELP for serial configuration commands."));
+  Serial.println(F("VIEW HEX / VIEW BIN selects terminal format; reboot always returns to HEX."));
   Serial.println();
 
   lastReadMs = millis();
   lastLogMs = millis();
+  // The initial scan has completed, so a terminal can observe feedback
+  // immediately without first sending READ. VIEW is never saved to EEPROM.
+  snapshotPending = false;
+  if (periodicLoggingEnabled) printS88Data();
 }
 
 void loop() {
@@ -847,10 +921,11 @@ void loop() {
     readAndPublishS88();
   }
 
-  if (
-      periodicLoggingEnabled &&
-      now - lastLogMs >= Config::LOG_INTERVAL_MS) {
+  if (periodicLoggingEnabled &&
+      ((snapshotPending && now - lastLogMs >= Config::MIN_SERIAL_INTERVAL_MS) ||
+       (now - lastLogMs >= Config::LOG_INTERVAL_MS))) {
     lastLogMs = now;
+    snapshotPending = false;
     printS88Data();
   }
 }
