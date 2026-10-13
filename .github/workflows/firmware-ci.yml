@@ -1,0 +1,26 @@
+name: S88Adapter Firmware CI
+
+on:
+  push:
+    branches:
+      - feature/hex-serial-stream
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  uno:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PlatformIO
+        run: python -m pip install platformio
+      - name: Compile firmware for Arduino Uno
+        run: pio run --environment uno
+      - name: Verify HEX transport contract
+        run: node --test tests/serial-hex.test.mjs
