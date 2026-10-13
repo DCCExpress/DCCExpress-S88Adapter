@@ -21,7 +21,7 @@ console.
 Current firmware version:
 
 ```text
-v0.5.0
+v0.6.0
 ```
 
 Main features:
@@ -32,6 +32,8 @@ Main features:
 - configurable I2C slave address
 - configuration stored in Arduino EEPROM
 - USB serial configuration console
+- automatic compact ASCII HEX + CRC16 snapshot streaming over USB serial
+- original underscore-bit text view selectable with VIEW BIN
 - periodic S88 diagnostic logging
 - read-only I2C protocol for **DCC-EX CommandStation-EX**
 - DCC-EX HAL driver included in this repository
@@ -76,7 +78,7 @@ S88 / s88-N feedback modules
 
 The DCC-EX HAL driver has read-only access to the adapter. Adapter I2C address
 and S88 byte length are configured locally through the Arduino USB serial
-console.
+console. The optional direct USB feedback integration streams CRC-verified HEX snapshots to the Hub.
 
 ## DCC-EX integration
 
@@ -344,7 +346,7 @@ For model railway occupancy detection, 10 kHz is still comfortably fast and prov
 
 The adapter refreshes the S88 snapshot approximately every `20 ms`.
 
-Periodic serial logging defaults to once per second.
+The serial link emits an initial full snapshot, changes (rate-limited to at most one frame every 60 ms), and a full heartbeat snapshot every second. Both serial views are human-readable and line-based. The I2C snapshot protocol for DCC-EX is unchanged.
 
 # Serial configuration console
 
@@ -397,6 +399,9 @@ SET ADDRESS <address>
 SET I2C <address>
 SET BYTES <count>
 SET GROUPS <count>
+VIEW HEX
+VIEW BIN
+VIEW
 SAVE
 DEFAULTS
 LOG ON
@@ -447,31 +452,76 @@ Print the current S88 snapshot immediately:
 READ
 ```
 
-Example:
+Default ASCII HEX example (2 S88 bytes, input 1 active):
 
 ```text
-S88: _00000001 _00000000
+S88:02:0100*91CD
 ```
 
-The rightmost bit of the first byte represents feedback input 1.
+The rightmost bit of the first byte represents feedback input 1. `VIEW BIN` restores the original `_00000001` text presentation.
 
 All inputs inactive:
 
 ```text
-S88: _00000000 _00000000
+S88:02:0000*A2FC
 ```
 
 Input 1 active:
 
 ```text
-S88: _00000001 _00000000
+S88:02:0100*91CD
 ```
 
 With 32 inputs configured (`SET BYTES 4`), input 17 active should appear as:
 
 ```text
-S88: _00000000 _00000000 _00000001 _00000000
+S88:04:00000100*AB3B
 ```
+
+### HEX and BIN terminal views
+
+USB serial operates at **115200 baud, LF line endings**. The default on every
+power-up/reset is **ASCII HEX**. Both modes are text, not raw binary bytes.
+
+```text
+VIEW HEX
+OK: serial view HEX (boot default)
+S88:04:0200FF01*66BC
+
+VIEW BIN
+OK: serial view BIN (ASCII bits)
+S88: _00000010 _00000000 _11111111 _00000001
+
+VIEW
+Serial view: BIN
+```
+
+The `VIEW` setting is **not stored in EEPROM**. A reboot always returns to
+HEX, irrespective of any earlier terminal session. All earlier commands
+(`HELP`, `STATUS`, `INFO`, `READ`, `SET ADDRESS`, `SET BYTES`,
+`SET GROUPS`, `SAVE`, `DEFAULTS`, `LOG ON/OFF`, `REBOOT`) are retained.
+
+HEX snapshot wire format:
+
+```text
+S88:NN:DDDD...*CCCC\n
+```
+
+- `NN`: 2 hexadecimal characters for the number of data bytes (1..32)
+- `DDDD...`: exactly `NN * 2` uppercase hexadecimal data characters
+- `CCCC`: 4 hexadecimal characters, CRC-16/CCITT-FALSE over raw
+  `[NN, byte1, ..., byteN]` (poly 0x1021, init 0xFFFF, no reflection, xor 0)
+- `\n`: LF packet delimiter; a partial or invalid CRC must be discarded
+- S88 sensor 1 = bit 0 of byte 1; groups follow in ascending byte order
+
+No separate `READ` polling is needed for v0.6. The UNO transmits its
+initial full snapshot on startup, on sensor changes (max ~16 frames/second
+due to 60 ms minimum spacing), and once per second as a heartbeat. The
+periodic full snapshot allows a consumer to recover from a lost frame.
+
+`READ` still sends a full snapshot immediately, using whichever view is
+selected, even when automatic logging is off. This serial behavior does
+not change the **read-only I2C interface** used by DCC-EX.
 
 ### SET ADDRESS
 
@@ -580,7 +630,7 @@ Disable it:
 LOG OFF
 ```
 
-Periodic logging is enabled by default after boot.
+Automatic streaming is enabled by default after boot; `LOG OFF` silences unsolicited snapshots (but `READ` still works), and `LOG ON` resumes streaming.
 
 ### REBOOT / RESET
 
