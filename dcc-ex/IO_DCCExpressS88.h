@@ -27,6 +27,11 @@ public:
       DIAG(F("DCCExpressS88: invalid input count %d"), nPins);
       return;
     }
+    // IODevice::checkNoOverlap accepts uint8_t, while the adapter can
+    // expose 256 VPINs. Validate pin #256 separately so another HAL device
+    // cannot silently share the last input.
+    if (nPins == MAX_INPUTS && !checkNoOverlap(firstVpin + 255, 1, 0))
+      return;
     if (checkNoOverlap(firstVpin, (uint8_t)(nPins > 255 ? 255 : nPins), i2cAddress))
       new DCCExpressS88(firstVpin, nPins, i2cAddress);
   }
@@ -64,7 +69,7 @@ private:
     return c;
   }
 
-  void fail(const char *message) {
+  void fail(const FSH *message) {
     DIAG(F("DCCExpressS88 I2C:%s %S"), _I2CAddress.toString(), message);
     _deviceState = DEVSTATE_FAILED;
   }
