@@ -11,7 +11,7 @@
 // -----------------------------------------------------------------------------
 
 #ifndef S88_ADAPTER_VERSION
-#define S88_ADAPTER_VERSION "0.5.0"
+#define S88_ADAPTER_VERSION "0.6.0"
 #endif
 
 #ifndef S88_ADAPTER_VERSION_MAJOR
@@ -19,7 +19,7 @@
 #endif
 
 #ifndef S88_ADAPTER_VERSION_MINOR
-#define S88_ADAPTER_VERSION_MINOR 5
+#define S88_ADAPTER_VERSION_MINOR 6
 #endif
 
 #ifndef S88_ADAPTER_VERSION_PATCH
